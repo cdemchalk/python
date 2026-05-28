@@ -1,0 +1,22 @@
+homeassistant: true
+permit_join: false           # set true via the web UI only when pairing new devices
+
+mqtt:
+  base_topic: zigbee2mqtt
+  server: mqtt://mosquitto:1883
+  user: z2m
+  password: CHANGE_ME_BEFORE_STARTING
+
+serial:
+  port: /dev/ttyACM0          # matches the mapping in docker-compose.yml
+  adapter: ember              # change to 'zstack' for Sonoff/CC2652, 'deconz', etc.
+
+frontend:
+  port: 8080
+
+advanced:
+  log_level: info
+  network_key: GENERATE       # Z2M will generate a random key on first start
+  pan_id: GENERATE
+  ext_pan_id: GENERATE
+  channel: 15

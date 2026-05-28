@@ -1,0 +1,49 @@
+version: "3.8"
+
+# Home automation stack for Windows + Docker Desktop.
+# Start with:  docker compose up -d
+# Open Home Assistant at: http://localhost:8123
+# Open Zigbee2MQTT UI at: http://localhost:8080
+
+services:
+  homeassistant:
+    container_name: homeassistant
+    image: ghcr.io/home-assistant/home-assistant:stable
+    restart: unless-stopped
+    network_mode: host          # required for local device discovery (mDNS/SSDP)
+    volumes:
+      - ./homeassistant-config:/config
+      - /etc/localtime:/etc/localtime:ro
+    environment:
+      - TZ=America/New_York     # change to your timezone
+
+  mosquitto:
+    container_name: mosquitto
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - ./mosquitto/config:/mosquitto/config
+      - ./mosquitto/data:/mosquitto/data
+      - ./mosquitto/log:/mosquitto/log
+
+  zigbee2mqtt:
+    container_name: zigbee2mqtt
+    image: koenkk/zigbee2mqtt:latest
+    restart: unless-stopped
+    depends_on:
+      - mosquitto
+    ports:
+      - "8080:8080"             # Zigbee2MQTT web UI
+    volumes:
+      - ./zigbee2mqtt-data:/app/data
+      - /run/udev:/run/udev:ro
+    # Pass the Zigbee USB coordinator through to the container.
+    # On Windows + Docker Desktop you must use usbipd-win to attach the dongle
+    # to the WSL2 distro Docker runs in. See README.md.
+    devices:
+      - /dev/ttyUSB0:/dev/ttyACM0
+    environment:
+      - TZ=America/New_York
