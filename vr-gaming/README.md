@@ -30,8 +30,16 @@ weights the GPU (and its VRAM) above everything else.
   power plan + USB selective suspend; HAGS / Game Mode / Game DVR; Memory
   Integrity (VBS); thermals; live background resource hogs; Resizable BAR
   guidance; and the installed VR stack (Pimax Play / SteamVR / OpenXR
-  Toolkit). It ends with a **prioritized, numbered list of fixes** sorted
-  CRITICAL -> LOW.
+  Toolkit).
+
+  It also runs a **driver-health and capacity audit**: devices Windows
+  flags with a non-OK driver status (the Device Manager yellow "!"), the
+  versions/dates of the drivers in the VR path (Display, USB, Net, System
+  chipset, storage) with anything 3+ years old flagged, every startup
+  entry, and the always-on vendor/RGB/telemetry services (Razer, Corsair,
+  Armoury, Nahimic, NVIDIA telemetry, ...) that add DPC latency and
+  microstutter. It ends with a **prioritized, numbered list of fixes**
+  sorted CRITICAL -> LOW.
 
   With `-MonitorSeconds N` it adds a **live load capture**: run a
   demanding VR scene while it samples GPU/CPU utilization, VRAM,

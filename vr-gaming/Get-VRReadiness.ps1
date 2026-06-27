@@ -558,6 +558,79 @@ Write-Host '   - Use Quad-Views / fixed-foveated rendering (OpenXR Toolkit or na
 Write-Host '     DLSS/DLAA where the game supports it - biggest FPS win on this headset.' -ForegroundColor Gray
 
 # ===========================================================================
+# Driver health - devices with problems and key driver versions/dates
+# ===========================================================================
+Write-Section 'Driver health'
+try {
+    # Devices Windows flags as broken / unconfigured = stalls, dropped USB,
+    # fallback drivers. These quietly cost performance and stability.
+    $bad = Get-PnpDevice -PresentOnly -ErrorAction Stop |
+           Where-Object { $_.Status -ne 'OK' -and $_.Class -notin @('SoftwareDevice') }
+    if ($bad) {
+        foreach ($d in $bad) {
+            Write-Result ('  ' + $d.Class) ("{0}  [{1}]" -f $d.FriendlyName, $d.Status) 'WARN'
+        }
+        Add-Finding ("$($bad.Count) device(s) report a non-OK driver status (Device Manager would show a yellow !). Open devmgmt.msc, find the flagged devices, and Update/reinstall drivers - especially anything under Display, USB, or System devices, which sit directly in the VR path.") 'MEDIUM'
+    } else {
+        Write-Result 'Devices with driver problems' 'none' 'OK'
+    }
+} catch { Write-Result 'PnP device status' "Could not query ($_)" 'INFO' }
+
+# Key driver versions/dates for the components that touch the VR pipeline.
+try {
+    $classes = 'DISPLAY','USB','Net','System','HDC','SCSIAdapter'
+    $drv = Get-CimInstance Win32_PnPSignedDriver -ErrorAction Stop |
+           Where-Object { $_.DeviceClass -in $classes -and $_.DriverDate }
+    Write-Host ''
+    Write-Host '  Component drivers (provider / version / date):' -ForegroundColor Gray
+    foreach ($cls in $classes) {
+        $rows = $drv | Where-Object { $_.DeviceClass -eq $cls } |
+                Sort-Object DeviceName -Unique | Select-Object -First 4
+        foreach ($d in $rows) {
+            $dd = $null
+            try { $dd = [Management.ManagementDateTimeConverter]::ToDateTime($d.DriverDate) } catch { }
+            $stamp = if ($dd) { $dd.ToString('yyyy-MM-dd') } else { 'unknown' }
+            Write-Result ('  [' + $cls + '] ' + $d.DeviceName) ("{0}  v{1}  {2}" -f $d.DriverProviderName, $d.DriverVersion, $stamp)
+            # Flag chipset/USB/storage/network drivers older than ~3 years -
+            # these are a common silent cause of USB dropouts and DPC latency.
+            if ($dd -and $cls -in @('USB','System','HDC','Net') -and ((Get-Date) - $dd).TotalDays -gt 1095 `
+                -and $d.DriverProviderName -notmatch 'Microsoft') {
+                Add-Finding ("Driver for '$($d.DeviceName)' ($cls) is from $stamp - over 3 years old. Chipset/USB/storage/LAN drivers this old cause USB disconnects and DPC-latency stutter in VR. Install the current chipset + LAN drivers from your motherboard vendor.") 'MEDIUM'
+            }
+        }
+    }
+    Write-Host '  Tip: install the motherboard vendors full CHIPSET package (not just' -ForegroundColor Gray
+    Write-Host '  Windows Update versions) - it carries the USB/PCIe/power drivers VR leans on.' -ForegroundColor Gray
+} catch { Write-Result 'Driver inventory' "Could not query ($_)" 'INFO' }
+
+# ===========================================================================
+# Startup & auto-start load - what eats capacity before you launch anything
+# ===========================================================================
+Write-Section 'Startup & background load'
+try {
+    $startup = Get-CimInstance Win32_StartupCommand -ErrorAction Stop
+    Write-Result 'Startup entries' ($startup.Count) ($(if ($startup.Count -gt 12) {'WARN'} else {'INFO'}))
+    $startup | Select-Object -First 15 | ForEach-Object {
+        Write-Result ('  ' + $_.Name) ($_.Location)
+    }
+    if ($startup.Count -gt 12) {
+        Add-Finding "$($startup.Count) startup entries are configured. Each one holds RAM/CPU and some keep a GPU overlay alive. Trim non-essentials in Task Manager > Startup (keep GPU driver + audio; disable RGB suites, updaters, launchers you open manually)." 'LOW'
+    }
+} catch { Write-Result 'Startup commands' "Could not query ($_)" 'INFO' }
+
+# Known vendor/RGB/telemetry services that run constantly and add overhead.
+try {
+    $noisy = Get-CimInstance Win32_Service -ErrorAction Stop |
+             Where-Object { $_.State -eq 'Running' -and $_.StartMode -eq 'Auto' -and
+                 $_.Name -match 'Razer|Corsair|iCUE|Armoury|AsusComService|LightingService|ROG|MSI_|NahimicService|Killer|GamingServices|RtkAudioService|LogiRegistryService|NvTelemetry|NvContainerLocalSystem' }
+    if ($noisy) {
+        Write-Host ''
+        Write-Result 'Always-on vendor services' (($noisy | Select-Object -Expand DisplayName -Unique) -join '; ') 'WARN'
+        Add-Finding 'RGB / vendor / telemetry services are running continuously (Razer/Corsair/Armoury/Nahimic/NVIDIA telemetry, etc.). They add CPU wakeups and DPC latency that show up as VR microstutter. Disable the ones you do not actively use via services.msc or their tray apps.' 'LOW'
+    }
+} catch { }
+
+# ===========================================================================
 # Live load capture - the actual bottleneck verdict (opt-in)
 # ===========================================================================
 if ($MonitorSeconds -gt 0) {
