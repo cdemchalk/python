@@ -17,6 +17,14 @@
     It is READ-ONLY. It changes nothing on the system. Every recommendation
     is printed for you to apply yourself.
 
+    A static inventory tells you what hardware you have; it cannot tell you
+    which part is pegged when the Crystal drops frames. -MonitorSeconds adds
+    a LIVE capture: start it, then run a demanding VR scene, and it samples
+    GPU utilization, VRAM, temperature, power draw vs limit, and (on NVIDIA)
+    the GPU's own clock-throttle reasons, then renders a GPU-bound vs
+    CPU-bound vs power/thermal-limited verdict. That verdict is the actual
+    bottleneck.
+
 .NOTES
     Run from an *elevated* PowerShell prompt for the most complete picture
     (power plan, some driver and firmware queries):
@@ -26,11 +34,17 @@
     Save a copy of the report to a file:
 
         .\Get-VRReadiness.ps1 -ReportPath .\vr-report.txt
+
+    Capture the live bottleneck: launch this, then immediately put on the
+    headset and load a heavy scene for the duration of the sample window:
+
+        .\Get-VRReadiness.ps1 -MonitorSeconds 30
 #>
 
 [CmdletBinding()]
 param(
-    [string]$ReportPath
+    [string]$ReportPath,
+    [int]$MonitorSeconds = 0
 )
 
 $ErrorActionPreference = 'Continue'
@@ -71,6 +85,13 @@ function Add-Finding {
         [ValidateSet('CRITICAL','HIGH','MEDIUM','LOW')][string]$Priority = 'MEDIUM'
     )
     $findings.Add([pscustomobject]@{ Priority = $Priority; Message = $Message })
+}
+
+function Get-Num($value) {
+    # Best-effort numeric coercion that tolerates $null / strings / units.
+    $n = 0.0
+    if ([double]::TryParse((([string]$value).Trim()), [ref]$n)) { return $n }
+    return $null
 }
 
 # ---- Admin check ----------------------------------------------------------
@@ -173,6 +194,101 @@ try {
     }
 } catch { Write-Result 'GPU enumeration' "Error: $_" 'WARN' }
 
+# ---- Locate nvidia-smi once; reused by telemetry + live capture -----------
+$nvidiaSmi = $null
+foreach ($cand in @(
+    "$env:ProgramFiles\NVIDIA Corporation\NVSMI\nvidia-smi.exe",
+    "$env:SystemRoot\System32\nvidia-smi.exe"
+)) { if (Test-Path $cand) { $nvidiaSmi = $cand; break } }
+if (-not $nvidiaSmi -and (Get-Command nvidia-smi -ErrorAction SilentlyContinue)) { $nvidiaSmi = 'nvidia-smi' }
+
+# Decodes the clocks_throttle_reasons.active bitmask into the reasons that
+# actually matter for "why is my framerate capped".
+function Get-NvThrottleReasons([string]$hex) {
+    if (-not $hex) { return @() }
+    try { $v = [Convert]::ToInt64(($hex -replace '0x',''), 16) } catch { return @() }
+    $r = @()
+    if ($v -band 0x4)  { $r += 'SW power cap (hitting the power limit)' }
+    if ($v -band 0x80) { $r += 'HW power brake (PSU/connector limit)' }
+    if ($v -band 0x20) { $r += 'SW thermal slowdown' }
+    if ($v -band 0x40) { $r += 'HW thermal slowdown (too hot)' }
+    if ($v -band 0x8)  { $r += 'HW slowdown (thermal/power emergency)' }
+    return $r
+}
+
+# ===========================================================================
+# GPU deep telemetry (NVIDIA) - PCIe link, power headroom, current clocks
+# ===========================================================================
+if ($nvidiaSmi) {
+    Write-Section 'GPU deep telemetry (nvidia-smi)'
+    $q = @(
+        'name','driver_version','vbios_version',
+        'pcie.link.gen.gpucurrent','pcie.link.gen.max',
+        'pcie.link.width.current','pcie.link.width.max',
+        'temperature.gpu','utilization.gpu',
+        'memory.used','memory.total',
+        'power.draw','power.limit',
+        'clocks.current.graphics','clocks.max.graphics'
+    ) -join ','
+    try {
+        $line = & $nvidiaSmi "--query-gpu=$q" '--format=csv,noheader,nounits' 2>$null | Select-Object -First 1
+        if ($line) {
+            $f = $line -split '\s*,\s*'
+            Write-Result 'Name'           $f[0]
+            Write-Result 'Driver / VBIOS' ("{0} / {1}" -f $f[1], $f[2])
+
+            $wCur = [int]($f[5]); $wMax = [int]($f[6])
+            Write-Result 'PCIe link' ("Gen{0} x{1}  (max Gen{2} x{3})" -f $f[3],$wCur,$f[4],$wMax) `
+                         ($(if ($wCur -ge $wMax) {'OK'} else {'WARN'}))
+            Write-Host '  (Link gen down-trains to Gen1 at idle to save power - normal. Width is the' -ForegroundColor Gray
+            Write-Host '   real signal: x16-capable cards running x8/x4 means a bad slot, riser, or' -ForegroundColor Gray
+            Write-Host '   a slot sharing lanes with an M.2/USB card.)' -ForegroundColor Gray
+            if ($wCur -lt $wMax) {
+                Add-Finding "GPU is negotiating PCIe x$wCur but the card supports x$wMax. Reseat it in the top PCIe x16 slot (CPU lanes) and check the manual for lane-sharing with M.2/USB slots. Reduced width steals VR bandwidth." 'HIGH'
+            }
+
+            $tempNow = Get-Num $f[7]
+            Write-Result 'Temp (idle/now)' ("{0} C" -f $f[7]) ($(if ($tempNow -and $tempNow -lt 75) {'OK'} else {'INFO'}))
+
+            $vUsed = Get-Num $f[9]; $vTot = Get-Num $f[10]
+            if ($vUsed -and $vTot) {
+                Write-Result 'VRAM in use (now)' ("{0:N0} / {1:N0} MB" -f $vUsed, $vTot)
+            }
+
+            $pDraw = Get-Num $f[11]; $pLim = Get-Num $f[12]
+            if ($pDraw -and $pLim) {
+                Write-Result 'Power draw / limit' ("{0:N0} W / {1:N0} W" -f $pDraw, $pLim)
+            }
+            Write-Result 'Graphics clock now/max' ("{0} / {1} MHz" -f $f[13], $f[14])
+        }
+    } catch { Write-Result 'nvidia-smi query' "Error: $_" 'WARN' }
+
+    # Human-readable throttle status (idle snapshot; the live capture below
+    # is what really matters, but flag a card that is already throttling).
+    try {
+        $tline = & $nvidiaSmi '--query-gpu=clocks_throttle_reasons.active' '--format=csv,noheader' 2>$null | Select-Object -First 1
+        $reasons = Get-NvThrottleReasons $tline
+        if ($reasons) {
+            Write-Result 'Active throttle (idle)' ($reasons -join '; ') 'WARN'
+        } else {
+            Write-Result 'Active throttle (idle)' 'none' 'OK'
+        }
+    } catch { }
+} else {
+    Write-Section 'GPU deep telemetry'
+    Write-Result 'nvidia-smi' 'Not found (non-NVIDIA GPU, or NVSMI missing)' 'INFO'
+    Write-Host '  AMD GPUs have no equivalent CLI by default. For PCIe link width, power,' -ForegroundColor Gray
+    Write-Host '  and throttle status use GPU-Z and watch the sensors tab during a session.' -ForegroundColor Gray
+}
+
+# ---- Resizable BAR (real VR uplift on modern cards) -----------------------
+Write-Host ''
+Write-Result 'Resizable BAR' 'Verify manually' 'INFO'
+Write-Host '  ReBAR is not reliably readable from script. Confirm it in GPU-Z (says' -ForegroundColor Gray
+Write-Host '  "Resizable BAR: Enabled") or the NVIDIA Control Panel system info. If it is' -ForegroundColor Gray
+Write-Host '  off, enable "Above 4G Decoding" + "Re-Size BAR Support" in BIOS - it lifts' -ForegroundColor Gray
+Write-Host '  framerate in several VR titles for free.' -ForegroundColor Gray
+
 # ===========================================================================
 # CPU
 # ===========================================================================
@@ -220,6 +336,20 @@ try {
     }
 } catch { Write-Result 'Memory' "Error: $_" 'WARN' }
 
+# Pagefile: a system-managed pagefile on a fast drive prevents hard stalls
+# when VRAM/RAM pressure spikes mid-session.
+try {
+    $pf = Get-CimInstance Win32_PageFileUsage -ErrorAction Stop
+    if ($pf) {
+        foreach ($p in $pf) {
+            Write-Result 'Pagefile' ("{0}  ({1} MB allocated, {2} MB peak)" -f $p.Name, $p.AllocatedBaseSize, $p.PeakUsage)
+        }
+    } else {
+        Write-Result 'Pagefile' 'None configured' 'WARN'
+        Add-Finding 'No pagefile is configured. With a fixed/absent pagefile, a VRAM or RAM spike can hard-crash the game instead of paging. Leave it System managed (on a fast SSD).' 'MEDIUM'
+    }
+} catch { Write-Result 'Pagefile' "Could not query" 'INFO' }
+
 # ===========================================================================
 # Storage
 # ===========================================================================
@@ -264,6 +394,15 @@ try {
     Write-Host '  full resolution at high refresh. Plug it directly into the GPU,' -ForegroundColor Gray
     Write-Host '  not the motherboard and not through most DP/USB-C hubs or KVMs.' -ForegroundColor Gray
     Add-Finding 'Verify the headset DisplayPort cable runs straight from the GPU. MST hubs, DP1.2 cables, and many USB-C dongles silently break DSC and cap refresh rate - a common cause of "stuck at low Hz".' 'MEDIUM'
+
+    # Current mode per display (resolution + refresh). The Crystal shows up
+    # here as a display while active - a low refresh value is a red flag.
+    try {
+        $vid = Get-CimInstance Win32_VideoController | Where-Object { $_.CurrentHorizontalResolution }
+        foreach ($v in $vid) {
+            Write-Result ('  ' + $v.Name) ("{0}x{1} @ {2} Hz" -f $v.CurrentHorizontalResolution, $v.CurrentVerticalResolution, $v.CurrentRefreshRate)
+        }
+    } catch { }
 } catch { Write-Result 'Display output path' "Error: $_" 'WARN' }
 
 # ===========================================================================
@@ -419,6 +558,86 @@ Write-Host '   - Use Quad-Views / fixed-foveated rendering (OpenXR Toolkit or na
 Write-Host '     DLSS/DLAA where the game supports it - biggest FPS win on this headset.' -ForegroundColor Gray
 
 # ===========================================================================
+# Live load capture - the actual bottleneck verdict (opt-in)
+# ===========================================================================
+if ($MonitorSeconds -gt 0) {
+    Write-Section ("Live load capture - sampling for {0}s" -f $MonitorSeconds)
+    Write-Host '>>> PUT THE HEADSET ON AND LOAD A DEMANDING VR SCENE NOW <<<' -ForegroundColor Yellow
+    Write-Host 'Sampling ~once per second. Keep the heavy scene on screen the whole time.' -ForegroundColor Gray
+    Write-Host ''
+
+    $gpuUtil=@(); $vramPct=@(); $temps=@(); $powerPct=@(); $cpuUtil=@(); $throttles=@{}
+    $end = (Get-Date).AddSeconds($MonitorSeconds)
+    while ((Get-Date) -lt $end) {
+        if ($nvidiaSmi) {
+            $s = & $nvidiaSmi '--query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,power.limit,clocks_throttle_reasons.active' '--format=csv,noheader,nounits' 2>$null | Select-Object -First 1
+            if ($s) {
+                $c = $s -split '\s*,\s*'
+                $u = Get-Num $c[0];  if ($null -ne $u) { $gpuUtil += $u }
+                $mu = Get-Num $c[1]; $mt = Get-Num $c[2]; if ($mu -and $mt) { $vramPct += ($mu / $mt * 100) }
+                $t = Get-Num $c[3];  if ($null -ne $t) { $temps += $t }
+                $pd = Get-Num $c[4]; $pl = Get-Num $c[5]; if ($pd -and $pl) { $powerPct += ($pd / $pl * 100) }
+                foreach ($r in (Get-NvThrottleReasons $c[6])) { $throttles[$r] = $true }
+            }
+        } else {
+            # AMD / fallback: GPU 3D-engine utilization via perf counters.
+            try {
+                $g = (Get-Counter '\GPU Engine(*engtype_3D)\Utilization Percentage' -ErrorAction Stop).CounterSamples |
+                     Measure-Object -Property CookedValue -Maximum
+                if ($g) { $gpuUtil += [math]::Min(100, [double]$g.Maximum) }
+            } catch { }
+        }
+        $cpu = (Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average
+        if ($null -ne $cpu) { $cpuUtil += [double]$cpu }
+        Start-Sleep -Milliseconds 900
+    }
+
+    if ($gpuUtil.Count -eq 0) {
+        Write-Result 'Live capture' 'No GPU samples collected (no nvidia-smi and GPU counters unavailable)' 'WARN'
+    } else {
+        $avgG = [math]::Round(($gpuUtil | Measure-Object -Average).Average, 0)
+        $maxG = [math]::Round(($gpuUtil | Measure-Object -Maximum).Maximum, 0)
+        $avgC = if ($cpuUtil.Count) { [math]::Round(($cpuUtil | Measure-Object -Average).Average, 0) } else { $null }
+        $maxT = if ($temps.Count)   { [math]::Round(($temps   | Measure-Object -Maximum).Maximum, 0) } else { $null }
+        $maxP = if ($powerPct.Count){ [math]::Round(($powerPct| Measure-Object -Maximum).Maximum, 0) } else { $null }
+        $maxV = if ($vramPct.Count) { [math]::Round(($vramPct | Measure-Object -Maximum).Maximum, 0) } else { $null }
+
+        Write-Result 'Samples'                 ($gpuUtil.Count)
+        Write-Result 'GPU utilization avg/max' ("{0}% / {1}%" -f $avgG, $maxG)
+        if ($null -ne $avgC) { Write-Result 'CPU utilization avg'  ("{0}%" -f $avgC) ($(if ($avgC -ge 85) {'WARN'} else {'INFO'})) }
+        if ($null -ne $maxV) { Write-Result 'VRAM peak'            ("{0}%" -f $maxV) ($(if ($maxV -ge 92) {'WARN'} else {'OK'})) }
+        if ($null -ne $maxT) { Write-Result 'GPU temp peak'        ("{0} C" -f $maxT) ($(if ($maxT -ge 84) {'WARN'} else {'OK'})) }
+        if ($null -ne $maxP) { Write-Result 'Power peak (% limit)' ("{0}%" -f $maxP) }
+        if ($throttles.Keys.Count) { Write-Result 'Throttle reasons seen' (($throttles.Keys) -join '; ') 'WARN' }
+
+        # ---- Bottleneck verdict ----
+        Write-Host ''
+        if ($avgG -ge 95) {
+            Write-Host 'VERDICT: GPU-BOUND. The GPU is saturated - it is the framerate ceiling.' -ForegroundColor Red
+            Add-Finding 'LIVE: GPU was saturated (avg >=95%) - you are GPU-bound, the expected high-FPS limiter on the Crystal. To raise framerate without new hardware: lower per-eye render quality in Pimax Play, drop to 90 Hz, enable DLSS/DLAA, and turn on Quad-Views / fixed-foveated rendering. Keeping BOTH full resolution and high framerate needs a faster GPU.' 'HIGH'
+        } elseif ($avgG -lt 85 -and $null -ne $avgC -and $avgC -ge 70) {
+            Write-Host 'VERDICT: CPU-BOUND. GPU has headroom but the CPU is the limiter.' -ForegroundColor Red
+            Add-Finding "LIVE: GPU averaged only $avgG% while CPU averaged $avgC% - you are CPU-bound. Raising GPU/visual settings is nearly free here. Fix the CPU side: close background load, confirm High Performance power plan, and check for a single-thread limit (sim-heavy titles). More GPU will NOT help until the CPU side is addressed." 'HIGH'
+        } elseif ($avgG -lt 85) {
+            Write-Host 'VERDICT: GPU NOT SATURATED. Something caps frames before the GPU.' -ForegroundColor Yellow
+            Add-Finding "LIVE: GPU averaged only $avgG% and was not the limiter. Likely a refresh/reprojection cap (SteamVR Motion Smoothing locking to half-rate), a CPU/single-thread limit, or too-low in-app render resolution. Open the SteamVR frame-timing graph and compare the CPU vs GPU lines to confirm." 'HIGH'
+        } else {
+            Write-Host ('VERDICT: GPU heavily loaded (avg {0}%) - near the ceiling.' -f $avgG) -ForegroundColor Yellow
+        }
+
+        if (($throttles.Keys -join ' ') -match 'power') {
+            Add-Finding 'LIVE: the GPU hit its POWER limit during the scene. Raise the power limit (MSI Afterburner), give it two separate PCIe power cables instead of one daisy-chained cable, verify the PSU has headroom, or undervolt to hold higher clocks within budget.' 'HIGH'
+        }
+        if ((($throttles.Keys -join ' ') -match 'thermal') -or ($null -ne $maxT -and $maxT -ge 84)) {
+            Add-Finding ("LIVE: the GPU was thermally limited (peak {0} C). Improve case airflow, raise the fan curve, repaste if the card is old, or undervolt. Thermal throttling silently caps clocks and framerate." -f $maxT) 'HIGH'
+        }
+        if ($null -ne $maxV -and $maxV -ge 92) {
+            Add-Finding "LIVE: VRAM peaked at $maxV% of capacity - you are near a VRAM wall. Lower texture resolution / supersampling in-game, or this is the concrete case for a higher-VRAM GPU." 'HIGH'
+        }
+    }
+}
+
+# ===========================================================================
 # Summary - prioritized findings
 # ===========================================================================
 Write-Section 'Summary - prioritized actions'
@@ -439,6 +658,13 @@ if ($findings.Count -eq 0) {
     Write-Host 'Work top-down: CRITICAL/HIGH items are what is actually restricting your' -ForegroundColor White
     Write-Host 'framerate. On the Crystal, the order of impact is almost always:' -ForegroundColor White
     Write-Host '   GPU  >  VRAM  >  RAM (dual-channel)  >  CPU  >  OS/power settings.' -ForegroundColor White
+}
+
+if ($MonitorSeconds -le 0) {
+    Write-Host ''
+    Write-Host 'This was a static scan. To capture the REAL bottleneck under load, re-run' -ForegroundColor Cyan
+    Write-Host 'during a VR session:  .\Get-VRReadiness.ps1 -MonitorSeconds 30' -ForegroundColor Cyan
+    Write-Host 'It will tell you whether you are GPU-bound, CPU-bound, or power/thermal-limited.' -ForegroundColor Cyan
 }
 
 if ($ReportPath) {

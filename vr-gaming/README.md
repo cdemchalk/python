@@ -23,12 +23,22 @@ weights the GPU (and its VRAM) above everything else.
 
 - `Get-VRReadiness.ps1` - read-only PowerShell scan. It inventories GPU
   (real VRAM via the driver registry, not the 4 GB-capped WMI value),
-  driver age, CPU, RAM (capacity + single/dual-channel), storage type and
-  free space, the DisplayPort path, USB controllers, power plan + USB
-  selective suspend, HAGS / Game Mode / Game DVR, Memory Integrity (VBS),
-  thermals (best-effort), live background resource hogs, and the installed
-  VR stack (Pimax Play / SteamVR / OpenXR Toolkit). It ends with a
-  **prioritized, numbered list of fixes** sorted CRITICAL -> LOW.
+  driver age, and **NVIDIA deep telemetry via nvidia-smi** (PCIe link
+  width, power draw vs limit, clocks, throttle reasons); CPU; RAM
+  (capacity + single/dual-channel); pagefile; storage type and free space;
+  the DisplayPort path and active resolution/refresh; USB controllers;
+  power plan + USB selective suspend; HAGS / Game Mode / Game DVR; Memory
+  Integrity (VBS); thermals; live background resource hogs; Resizable BAR
+  guidance; and the installed VR stack (Pimax Play / SteamVR / OpenXR
+  Toolkit). It ends with a **prioritized, numbered list of fixes** sorted
+  CRITICAL -> LOW.
+
+  With `-MonitorSeconds N` it adds a **live load capture**: run a
+  demanding VR scene while it samples GPU/CPU utilization, VRAM,
+  temperature, power, and throttle reasons, then prints a **bottleneck
+  verdict** - GPU-bound vs CPU-bound vs power/thermal/VRAM-limited. That
+  verdict is the thing that actually answers "what is restricting my
+  framerate".
 
 It changes nothing. Every recommendation is printed for you to apply.
 
@@ -46,8 +56,24 @@ Save a copy of the report to a file to share or keep:
 .\Get-VRReadiness.ps1 -ReportPath .\vr-report.txt
 ```
 
+Capture the live bottleneck (the important one). Launch this, then
+immediately put the headset on and load a heavy scene for the whole
+window:
+
+```powershell
+.\Get-VRReadiness.ps1 -MonitorSeconds 30
+```
+
+Combine both - run a live capture and save the whole report:
+
+```powershell
+.\Get-VRReadiness.ps1 -MonitorSeconds 30 -ReportPath .\vr-report.txt
+```
+
 Elevation matters for the power-plan and some driver/firmware queries; it
-still runs without admin but will say those sections are incomplete.
+still runs without admin but will say those sections are incomplete. The
+live capture's GPU telemetry is richest on NVIDIA (nvidia-smi); on AMD it
+falls back to Windows GPU performance counters for utilization.
 
 ## How to read the output
 
@@ -69,10 +95,12 @@ framerate win on this headset.
 
 ## What this script does NOT do
 
-- It does not measure in-game FPS or GPU frametimes under load. For that,
-  run a session with the **SteamVR frame-timing** overlay or **HWiNFO64**
-  and watch for the GPU pegged at ~100% (GPU-bound) vs the CPU frame line
-  spiking (CPU-bound).
-- It does not confirm real temperatures under load - ACPI zones are
-  coarse. Use HWiNFO64 / GPU-Z during a VR session to rule out thermal or
-  power throttling.
+- It does not read the headset's actual in-game FPS or per-frame
+  reprojection - only the runtime knows that. Pair the live verdict with
+  the **SteamVR frame-timing** overlay to see dropped/reprojected frames
+  directly. (The live capture *does* tell you whether the GPU or CPU is
+  the limiter, which is the part most people guess wrong.)
+- Resizable BAR is not reliably readable from script, so it points you to
+  GPU-Z / NVIDIA Control Panel to confirm it rather than guessing.
+- ACPI thermal zones are coarse; the live capture uses nvidia-smi's real
+  GPU temperature on NVIDIA, but for AMD use GPU-Z/HWiNFO64 alongside it.
