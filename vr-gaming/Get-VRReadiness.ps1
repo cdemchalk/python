@@ -538,16 +538,43 @@ try {
 # VR software stack
 # ===========================================================================
 Write-Section 'VR software'
-$swPaths = @{
-    'Pimax Play'  = @("$env:ProgramFiles\Pimax\Pimax Client", "${env:ProgramFiles(x86)}\Pimax")
-    'SteamVR'     = @("$env:ProgramFiles(x86)\Steam\steamapps\common\SteamVR", "$env:ProgramFiles\Steam\steamapps\common\SteamVR")
-    'OpenXR Tk'   = @("$env:ProgramFiles\OpenXR-Toolkit")
+
+# Looks past default install paths: also checks the uninstall registry and,
+# for SteamVR, every Steam library (games are often on another drive).
+function Test-AppInstalled([string]$pattern, [string[]]$paths) {
+    foreach ($p in $paths) { if ($p -and (Test-Path $p)) { return $true } }
+    foreach ($k in @(
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
+        'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*')) {
+        if (Get-ItemProperty $k -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -match $pattern }) { return $true }
+    }
+    return $false
 }
-foreach ($name in $swPaths.Keys) {
-    $found = $false
-    foreach ($p in $swPaths[$name]) { if (Test-Path $p) { $found = $true; break } }
-    Write-Result $name ($(if ($found) {'Installed'} else {'Not found'})) ($(if ($found) {'OK'} else {'INFO'}))
-}
+
+# Resolve the Steam install + all library folders to find SteamVR anywhere.
+$steamVrFound = $false
+try {
+    $steamPath = (Get-ItemProperty 'HKCU:\Software\Valve\Steam' -ErrorAction Stop).SteamPath
+    if ($steamPath) {
+        $libs = @($steamPath)
+        $vdf = Join-Path $steamPath 'steamapps\libraryfolders.vdf'
+        if (Test-Path $vdf) {
+            (Get-Content $vdf) | Select-String '"path"\s*"(.+?)"' | ForEach-Object {
+                $libs += ($_.Matches.Groups[1].Value -replace '\\\\','\')
+            }
+        }
+        foreach ($l in $libs) {
+            if (Test-Path (Join-Path $l 'steamapps\common\SteamVR')) { $steamVrFound = $true; break }
+        }
+    }
+} catch { }
+
+$pimax  = Test-AppInstalled 'Pimax' @("$env:ProgramFiles\Pimax", "${env:ProgramFiles(x86)}\Pimax", "$env:LOCALAPPDATA\Pimax", "$env:ProgramData\Pimax")
+$openxr = Test-AppInstalled 'OpenXR.?Toolkit' @("$env:ProgramFiles\OpenXR-Toolkit")
+Write-Result 'Pimax Play' ($(if ($pimax)       {'Installed'} else {'Not found'})) ($(if ($pimax)       {'OK'} else {'INFO'}))
+Write-Result 'SteamVR'    ($(if ($steamVrFound){'Installed'} else {'Not found'})) ($(if ($steamVrFound){'OK'} else {'INFO'}))
+Write-Result 'OpenXR Tk'  ($(if ($openxr)      {'Installed'} else {'Not found'})) ($(if ($openxr)      {'OK'} else {'INFO'}))
 Write-Host ''
 Write-Host '  Levers inside the software (apply after hardware is sorted):' -ForegroundColor Gray
 Write-Host '   - Pimax Play: lower per-eye Render Quality first; set refresh to a rate' -ForegroundColor Gray
@@ -588,7 +615,8 @@ try {
                 Sort-Object DeviceName -Unique | Select-Object -First 4
         foreach ($d in $rows) {
             $dd = $null
-            try { $dd = [Management.ManagementDateTimeConverter]::ToDateTime($d.DriverDate) } catch { }
+            if ($d.DriverDate -is [datetime]) { $dd = $d.DriverDate }
+            else { try { $dd = [Management.ManagementDateTimeConverter]::ToDateTime([string]$d.DriverDate) } catch { } }
             $stamp = if ($dd) { $dd.ToString('yyyy-MM-dd') } else { 'unknown' }
             Write-Result ('  [' + $cls + '] ' + $d.DeviceName) ("{0}  v{1}  {2}" -f $d.DriverProviderName, $d.DriverVersion, $stamp)
             # Flag chipset/USB/storage/network drivers older than ~3 years -
