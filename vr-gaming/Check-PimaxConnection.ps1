@@ -62,8 +62,14 @@ if (-not $running) {
     Add-Finding 'No Pimax runtime process is running. Launch Pimax Play as Administrator. If it is already "open" in the tray but no PimaxClient/pi_server process exists, the service crashed - fully quit it, end any leftover Pimax processes in Task Manager, and relaunch.'
 } else {
     # The client UI can run while the underlying server process is dead.
-    if ($running -notmatch 'pi_server|PVRServer|PiServer|RuntimeSvc') {
-        Add-Finding 'Pimax client UI is running but the underlying runtime/server process is not. This is the classic "UI shows disconnected" state. Fully quit Pimax Play, end all Pimax processes in Task Manager, then relaunch as Administrator.'
+    # Match the actual running names against the server-process patterns;
+    # -notmatch on the whole array would return the non-matching elements
+    # (a false positive whenever the UI process is up), so filter explicitly.
+    $serverUp = @($running | Where-Object { $_ -match 'pi_server|PVRServer|PiServer|RuntimeSvc' })
+    if (-not $serverUp) {
+        Add-Finding 'Pimax client UI is running but the underlying runtime/server process (pi_server) is not. This is the classic "UI shows disconnected" state. Fully quit Pimax Play, end all Pimax processes in Task Manager, then relaunch as Administrator.'
+    } else {
+        Write-Result 'Runtime server process' 'Up (pi_server)' 'OK'
     }
 }
 
