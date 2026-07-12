@@ -69,6 +69,21 @@ motherboard**, not a drop-in:
   over rather than rebuying.
 - **GPU/PSU/storage:** all carry over unchanged.
 
+### If you keep the existing RAM (CPU + board only)
+
+You keep **almost the entire gain** — roughly **~28–42%** vs the ~30–45% with
+an ideal 6000 CL30 kit. Reason: the 9800X3D's 3D V-Cache is what fixes the
+main-thread limit, and it also makes MSFS *less* sensitive to RAM speed
+(more of the working set stays in cache). The 5600 → 6000 CL30 difference is
+only ~2–4% in gaming generally, and smaller than that on an X3D chip. In the
+city scenario (~30–35 FPS now) that's ~44–48 FPS instead of ~45–50 — a 1–2 FPS
+difference you won't feel. **Not worth buying RAM for.**
+
+The one thing to verify after the build: confirm the kit actually applies its
+EXPO/XMP profile and runs at 5600 (check Task Manager / CPU-Z). A 2×48 GB
+dual-rank kit that falls back to JEDEC ~4800 would cost ~5–8%; if 5600 won't
+hold cleanly, 5200 is still fine — just don't leave it at 4800.
+
 ## Bottom line
 
 1. **Buy: Ryzen 7 9800X3D** + an AM5 board + 64 GB DDR5-6000 CL30. Best
