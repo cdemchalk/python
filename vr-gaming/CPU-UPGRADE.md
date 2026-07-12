@@ -56,10 +56,15 @@ The 12900K is LGA1700; the X3D chips are **AM5**, so this is CPU **+
 motherboard**, not a drop-in:
 
 - **Motherboard:** any B650/B650E/X670E (or newer B850/X870) AM5 board.
-- **RAM:** AM5's sweet spot is **DDR5-6000 CL30**. Your current 96 GB DDR5-5600
-  *may* boot on AM5 but likely won't run its rated speed cleanly on Ryzen and
-  isn't the ideal kit — budget for a 2×32 GB DDR5-6000 CL30 kit for best MSFS
-  results (64 GB is plenty; you don't need 96).
+- **RAM:** DDR5, same as now — your 96 GB DDR5-5600 is **not incompatible** and
+  will almost certainly run on AM5. Three caveats, none fatal: (1) it's an
+  XMP (Intel) kit, and AMD prefers EXPO — most AM5 boards apply the XMP timings
+  anyway, occasionally needing manual tuning; (2) 2×48 GB are high-capacity
+  dual-rank DIMMs, which Ryzen's memory controller may not push to full rated
+  speed; (3) AM5's latency sweet spot is **DDR5-6000 CL30**, so 5600 is fine but
+  slightly off-optimal for MSFS. Reasonable plan: reuse the 96 GB first, and
+  only buy a 64 GB DDR5-6000 CL30 EXPO kit later if you want the last few
+  percent (64 GB is plenty for MSFS; you don't need 96).
 - **Cooler:** most modern coolers include an AM5 bracket — check yours carries
   over rather than rebuying.
 - **GPU/PSU/storage:** all carry over unchanged.
