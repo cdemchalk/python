@@ -1,0 +1,31 @@
+#! Purchase approval workflow with swimlanes and rework loops.
+title Purchase approval
+direction TB
+
+start              "Request created"            #blue
+step   draft       "Fill in request"
+step   submit      "Submit for approval"
+decide mgr_ok      "Manager approves?"          #amber
+step   revise      "Revise request"
+decide over_limit  "Over $10k?"                 #amber
+decide fin_ok      "Finance approves?"          #amber
+step   order       "Place purchase order"       #green
+doc    po          "Purchase order"
+end                "Done"
+end    rejected    "Rejected"                   #red
+
+start -> draft -> submit -> mgr_ok
+mgr_ok -> over_limit : yes
+mgr_ok -> revise     : changes
+mgr_ok -> rejected   : no
+revise -> submit                         #! loop back
+over_limit -> fin_ok : yes
+over_limit -> order  : no
+fin_ok -> order      : yes
+fin_ok -> revise     : changes
+order -> po -> end
+
+lane requester "Requester" { start, draft, submit, revise }
+lane manager   "Manager"   { mgr_ok, rejected }
+lane finance   "Finance"   { over_limit, fin_ok }
+lane purchasing "Purchasing" { order, po, end }

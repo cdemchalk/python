@@ -1,0 +1,36 @@
+#! System architecture for a lending platform, left to right, with groups.
+title Lending platform architecture
+direction LR
+
+start  users     "Borrowers & staff"      #blue
+step   web       "Web app"
+step   mobile    "Mobile app"
+step   gateway   "API gateway"            #purple
+step   auth      "Auth service"
+step   loans     "Loan service"
+step   payments  "Payment service"
+step   notify    "Notification service"
+db     loandb    "Loans DB"               #green
+db     paydb     "Payments DB"            #green
+db     cache     "Redis cache"            #red
+step   queue     "Event bus"              #amber
+doc    reports   "Nightly reports"
+step   bank      "Bank ACH network"       #gray
+
+users -> web -> gateway
+users -> mobile -> gateway
+gateway -> auth
+gateway -> loans
+gateway -> payments
+auth -.-> cache
+loans -> loandb
+payments -> paydb
+payments ==> bank : ACH
+loans -> queue : events
+payments -> queue : events
+queue -> notify
+queue -> reports
+
+group clients  "Clients"        { web, mobile }
+group services "Core services"  #blue { auth, loans, payments, notify }
+group data     "Data stores"    #green { loandb, paydb, cache }

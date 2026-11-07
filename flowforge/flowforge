@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# FlowForge launcher: builds the app on first use (or when sources change) and runs it.
+set -euo pipefail
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BIN="$DIR/build/install/flowforge/bin/flowforge"
+STAMP="$DIR/build/install/flowforge/lib/flowforge-0.1.0.jar"
+if [[ ! -x "$BIN" || ! -f "$STAMP" ]] || [[ -n "$(find "$DIR/src/main" "$DIR/build.gradle.kts" -newer "$STAMP" -print -quit 2>/dev/null)" ]]; then
+  (cd "$DIR" && ./gradlew -q installDist >&2)
+fi
+exec "$BIN" "$@"
