@@ -1,0 +1,28 @@
+#! Loan payment posting: how an incoming payment is applied to a loan account.
+title Loan payment posting
+direction TB
+
+start            "Payment received"        #blue
+step   validate  "Validate account"
+decide active    "Account active?"         #amber
+step   apply     "Apply to principal\nand interest"
+step   suspense  "Hold in suspense"        #red
+db     ledger    "Loan ledger"             #green
+doc    receipt   "Payment receipt"
+step   review    "Manual review"           #purple
+end              "Posted"
+end    closed    "Returned to payer"
+
+start -> validate -> active
+active -> apply    : yes
+active -> suspense : no
+apply -> ledger -> receipt -> end
+suspense -> review
+review -> apply    : resolved
+review -> closed   : reject
+ledger -.-> review : audit flag
+
+note   cutoff    "Payments after 5pm\npost next business day"
+cutoff -.-> validate
+
+group "Core system" { validate, apply, ledger }
