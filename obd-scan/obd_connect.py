@@ -399,6 +399,10 @@ def diagnose(elm: Elm327, banner: str, args) -> bool:
     m = re.search(r"v(\d+\.\d+)", ver, re.I)
     if "STN" in stn.upper() or "OBDLINK" in (desc + stn).upper():
         report("PASS", "Chip", f"genuine STN-based ({stn or desc})")
+        stdi = " ".join(elm.cmd("STDI", 1.0))
+        stsn = " ".join(elm.cmd("STSN", 1.0))
+        if stdi and stdi != "?":
+            report("INFO", "Device", stdi + (f", serial {stsn}" if stsn and stsn != "?" else ""))
     elif m:
         v = m.group(1)
         clone = v in ("2.1", "2.2", "2.3") or desc.strip() in ("", "?")
@@ -515,6 +519,15 @@ def diagnose(elm: Elm327, banner: str, args) -> bool:
 # --------------------------------------------------------------------------
 # Main flow
 # --------------------------------------------------------------------------
+
+
+def obdlink_hints() -> None:
+    fix("OBDLink MX+ (and LX/MX): it is a Bluetooth Classic (SPP) adapter, not BLE, so use "
+        "--port, not --ble. It only accepts a new pairing for a short window after you press "
+        "the button on its face - press it, then pair from the computer within ~2 minutes "
+        "(no PIN normally needed). If it was paired to a phone, turn that phone's Bluetooth off: "
+        "it reconnects automatically and holds the adapter. With the ignition off it sleeps; "
+        "turn the ignition ON to wake it.")
 
 
 def mac_bt_hints() -> None:
@@ -674,6 +687,7 @@ def main() -> int:
         if not ports and not wifi and not ble_devs:
             fix("Nothing that looks like an OBD adapter was found. Plug it into the car's OBD port "
                 "(under the dash, driver side) and confirm its LED lights up.")
+        obdlink_hints()
         if IS_MAC:
             mac_bt_hints()
         elif IS_WIN:
